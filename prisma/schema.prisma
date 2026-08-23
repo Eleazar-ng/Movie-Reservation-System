@@ -12,3 +12,298 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Users, roles, permissions, OAuth
+// ─────────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+  SUPER_ADMIN
+}
+
+// Fixed, code-defined set (compile-time safety in guards/decorators) rather
+// than a dynamic table — permissions are enforced by code, not authored as
+// content, so a migration to add one is the right cost to pay.
+enum PermissionKey {
+  MOVIES_MANAGE
+  THEATERS_MANAGE
+  SHOWTIMES_MANAGE
+  RESERVATIONS_MANAGE
+  REPORTS_VIEW
+}
+
+enum OAuthProvider {
+  GOOGLE
+}
+
+model User {
+  id           String    @id @default(uuid())
+  firstName    String    @map("first_name")
+  lastName     String    @map("last_name")
+  email        String    @unique
+  passwordHash String?   @map("password_hash") // null for Google-only accounts
+  role         UserRole  @default(CUSTOMER)
+  isActive     Boolean   @default(true) @map("is_active") // reversible suspension
+  deletedAt    DateTime? @map("deleted_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  oauthAccounts OAuthAccount[]
+  reservations  Reservation[]
+
+  // Permissions this user holds (as an admin/super_admin).
+  permissionsHeld AdminPermission[] @relation("PermissionHolder")
+  // Permissions this user has granted to others (super_admin audit trail).
+  permissionsGranted AdminPermission[] @relation("PermissionGrantor")
+
+  @@map("users")
+}
+
+model OAuthAccount {
+  id                String        @id @default(uuid())
+  userId            String        @map("user_id")
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider          OAuthProvider
+  providerAccountId String        @map("provider_account_id")
+  createdAt         DateTime      @default(now()) @map("created_at")
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("oauth_accounts")
+}
+
+model AdminPermission {
+  id          String        @id @default(uuid())
+  userId      String        @map("user_id")
+  user        User          @relation("PermissionHolder", fields: [userId], references: [id], onDelete: Cascade)
+  permission  PermissionKey
+  grantedById String        @map("granted_by_id")
+  grantedBy   User          @relation("PermissionGrantor", fields: [grantedById], references: [id], onDelete: Cascade)
+  grantedAt   DateTime      @default(now()) @map("granted_at")
+
+  @@unique([userId, permission])
+  @@index([userId])
+  @@map("admin_permissions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Theaters, screens, seats
+// ─────────────────────────────────────────────────────────────────────────
+
+enum SeatType {
+  STANDARD
+  PREMIUM
+  RECLINER
+  ACCESSIBLE
+  COUPLE
+}
+
+model Theater {
+  id          String    @id @default(uuid())
+  name        String
+  addressLine String    @map("address_line")
+  city        String
+  state       String
+  postalCode  String    @map("postal_code")
+  country     String
+  timezone    String // IANA, e.g. "America/Chicago" — for local display only; all timestamps stored UTC
+  isActive    Boolean   @default(true) @map("is_active")
+  deletedAt   DateTime? @map("deleted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  screens Screen[]
+
+  @@map("theaters")
+}
+
+model Screen {
+  id        String    @id @default(uuid())
+  theaterId String    @map("theater_id")
+  theater   Theater   @relation(fields: [theaterId], references: [id], onDelete: Restrict)
+  name      String
+  isActive  Boolean   @default(true) @map("is_active")
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  // No rows/seatsPerRow here on purpose — capacity is COUNT(Seat), not a
+  // stored/cached field. See Stage 1 notes: avoids drift between a cached
+  // number and the actual seat rows, and keeps capacity/occupancy as real
+  // queries rather than column reads.
+  seats     Seat[]
+  showtimes Showtime[]
+
+  @@index([theaterId])
+  @@map("screens")
+}
+
+model Seat {
+  id         String    @id @default(uuid())
+  screenId   String    @map("screen_id")
+  screen     Screen    @relation(fields: [screenId], references: [id], onDelete: Restrict)
+  rowLabel   String    @map("row_label") // e.g. "A"
+  seatNumber Int       @map("seat_number") // position within the row
+  seatType   SeatType  @default(STANDARD) @map("seat_type")
+  isActive   Boolean   @default(true) @map("is_active") // maintenance/out-of-service
+  deletedAt  DateTime? @map("deleted_at") // seats are referenced by historical bookings — never hard-deleted
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  reservationSeats ReservationSeat[]
+
+  @@unique([screenId, rowLabel, seatNumber])
+  @@index([screenId])
+  @@map("seats")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Movies, genres
+// ─────────────────────────────────────────────────────────────────────────
+
+model Movie {
+  id              String    @id @default(uuid())
+  title           String
+  description     String
+  posterKey       String?   @map("poster_key") // object storage key; presigned view URL generated at read time
+  durationMinutes Int       @map("duration_minutes") // required — Showtime scheduling depends on it
+  releaseDate     DateTime? @map("release_date") @db.Date
+  rating          String? // e.g. "PG-13"
+  language        String? // e.g. "en"
+  isActive        Boolean   @default(true) @map("is_active")
+  deletedAt       DateTime? @map("deleted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  genres    MovieGenre[]
+  showtimes Showtime[]
+
+  @@index([isActive])
+  @@map("movies")
+}
+
+model Genre {
+  id   String @id @default(uuid())
+  name String @unique
+
+  movies MovieGenre[]
+
+  @@map("genres")
+}
+
+// Pure join table — no attributes of its own, so a composite key rather
+// than a surrogate UUID (the one deliberate exception to the UUID-PK rule).
+model MovieGenre {
+  movieId String @map("movie_id")
+  movie   Movie  @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  genreId String @map("genre_id")
+  genre   Genre  @relation(fields: [genreId], references: [id], onDelete: Cascade)
+
+  @@id([movieId, genreId])
+  @@index([genreId])
+  @@map("movie_genres")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Showtimes & pricing
+// ─────────────────────────────────────────────────────────────────────────
+
+enum ShowtimeStatus {
+  SCHEDULED
+  CANCELLED
+}
+
+model Showtime {
+  id        String         @id @default(uuid())
+  movieId   String         @map("movie_id")
+  movie     Movie          @relation(fields: [movieId], references: [id], onDelete: Restrict)
+  screenId  String         @map("screen_id")
+  screen    Screen         @relation(fields: [screenId], references: [id], onDelete: Restrict)
+  startTime DateTime       @map("start_time")
+  endTime   DateTime       @map("end_time") // snapshot: startTime + movie.durationMinutes + buffer at creation time — not recomputed if the movie's duration changes later
+  status    ShowtimeStatus @default(SCHEDULED) // CANCELLED = admin pulled a live showtime, may have existing bookings needing refunds (Stage 7)
+  deletedAt DateTime?      @map("deleted_at") // distinct from CANCELLED: erasing a mistaken entry that never had bookings
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+
+  pricing          ShowtimePricing[]
+  reservations     Reservation[]
+  reservationSeats ReservationSeat[]
+
+  // Supports the Stage 4 overlap-prevention query: "any other SCHEDULED,
+  // non-deleted showtime on this screen whose [startTime, endTime) range
+  // intersects this one". A Postgres exclusion constraint (via a manual
+  // migration, btree_gist) is the airtight version of this; this index
+  // makes the plain range-overlap query fast either way.
+  @@index([screenId, startTime, endTime])
+  @@index([movieId, startTime])
+  @@map("showtimes")
+}
+
+model ShowtimePricing {
+  id         String   @id @default(uuid())
+  showtimeId String   @map("showtime_id")
+  showtime   Showtime @relation(fields: [showtimeId], references: [id], onDelete: Cascade)
+  seatType   SeatType @map("seat_type")
+  priceCents Int      @map("price_cents")
+
+  @@unique([showtimeId, seatType])
+  @@map("showtime_pricing")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Reservations & seat holds
+// ─────────────────────────────────────────────────────────────────────────
+
+enum ReservationStatus {
+  HELD
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+}
+
+model Reservation {
+  id              String            @id @default(uuid())
+  userId          String            @map("user_id")
+  user            User              @relation(fields: [userId], references: [id], onDelete: Restrict)
+  showtimeId      String            @map("showtime_id")
+  showtime        Showtime          @relation(fields: [showtimeId], references: [id], onDelete: Restrict)
+  status          ReservationStatus @default(HELD)
+  totalPriceCents Int               @map("total_price_cents")
+  expiresAt       DateTime?         @map("expires_at") // set while HELD, cleared on confirm
+  confirmedAt     DateTime?         @map("confirmed_at")
+  cancelledAt     DateTime?         @map("cancelled_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  seats ReservationSeat[]
+  // `payments` relation (Stripe PaymentIntents/refunds) joins here in
+  // Stage 7 — deliberately not modeled yet, that stage owns its own shape.
+
+  @@index([userId, status])
+  @@index([showtimeId, status])
+  @@map("reservations")
+}
+
+model ReservationSeat {
+  id                  String      @id @default(uuid())
+  reservationId       String      @map("reservation_id")
+  reservation         Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  showtimeId          String      @map("showtime_id") // denormalized: scopes the uniqueness backstop below without a join
+  showtime            Showtime    @relation(fields: [showtimeId], references: [id], onDelete: Cascade)
+  seatId              String      @map("seat_id")
+  seat                Seat        @relation(fields: [seatId], references: [id], onDelete: Restrict)
+  priceCentsAtBooking Int         @map("price_cents_at_booking") // snapshot from ShowtimePricing at hold time — never recomputed
+  createdAt           DateTime    @default(now()) @map("created_at")
+
+  // The double-booking backstop: only ever one live row per (showtime,
+  // seat) pair. Rows are deleted on cancel/expire (see reservation.service
+  // in Stage 6), which is what makes a plain UNIQUE index sufficient here
+  // rather than needing a partial index — see Stage 1 notes on why
+  // delete-on-release was chosen over a permanent audit trail.
+  @@unique([showtimeId, seatId])
+  @@index([reservationId])
+  @@map("reservation_seats")
+}
