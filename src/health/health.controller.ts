@@ -3,6 +3,7 @@ import { ApiExcludeController } from '@nestjs/swagger';
 import { HealthCheck, HealthCheckService, HttpHealthIndicator, MemoryHealthIndicator } from '@nestjs/terminus';
 import { PrismaHealthIndicator } from './prisma.health';
 import { ConfigService } from '@nestjs/config';
+import { Public } from 'src/modules/auth/decorators/public.decorator';
 
 /**
  * Excluded from the public OpenAPI contract (deliverable #2) since these
@@ -22,6 +23,7 @@ export class HealthController {
 
   // Liveness: "is the process up at all". No dependency checks — used by
   // an orchestrator to decide whether to restart the container.
+  @Public()
   @Get('live')
   live(): { status: string; timestamp: string } {
     return { status: 'ok', timestamp: new Date().toISOString() };
@@ -29,6 +31,7 @@ export class HealthController {
 
   // Readiness: "can this instance actually serve traffic right now".
   // Checks the database and heap usage; used to gate load-balancer routing.
+  @Public()
   @Get('ready')
   @HealthCheck()
   ready() {
@@ -40,6 +43,7 @@ export class HealthController {
 
   // Full health report (DB + storage reachability + memory) — useful for
   // a status page or manual debugging, not wired to orchestrator probes.
+  @Public()
   @Get()
   @HealthCheck()
   check() {

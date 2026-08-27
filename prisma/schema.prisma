@@ -51,6 +51,7 @@ model User {
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
   oauthAccounts OAuthAccount[]
+  refreshTokens  RefreshToken[]
   reservations  Reservation[]
 
   // Permissions this user holds (as an admin/super_admin).
@@ -72,6 +73,27 @@ model OAuthAccount {
   @@unique([provider, providerAccountId])
   @@index([userId])
   @@map("oauth_accounts")
+}
+
+// Refresh tokens are stored hashed (never the raw token — same principle as
+// passwordHash) so a leaked database dump can't be replayed directly.
+// `replacedById` supports rotation-chain tracking: each refresh issues a
+// new token and marks the old one's replacement, so reuse of an already-
+// rotated token (a signal of theft) is detectable by walking the chain.
+model RefreshToken {
+  id            String        @id @default(uuid())
+  userId        String        @map("user_id")
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash     String        @unique @map("token_hash")
+  expiresAt     DateTime      @map("expires_at")
+  revokedAt     DateTime?     @map("revoked_at")
+  replacedById  String?       @unique @map("replaced_by_id")
+  replacedBy    RefreshToken? @relation("TokenRotation", fields: [replacedById], references: [id])
+  previousToken RefreshToken? @relation("TokenRotation")
+  createdAt     DateTime      @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("refresh_tokens")
 }
 
 model AdminPermission {
